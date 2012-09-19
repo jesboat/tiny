@@ -1,0 +1,89 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+use Time::Local;
+use List::Util 'min';
+
+# constants
+use constant {
+	HOURS_DAY => 24,
+	MINUTES_HOUR => 60,
+	SECONDS_MINUTE => 60,
+	SECONDS_HOUR => 60*60,
+	SECONDS_DAY => 60*60*24,
+    };
+# config
+use constant {
+	SLEEP_FOR => 1 * SECONDS_MINUTE,
+	INFO_EVERY => 30 * SECONDS_MINUTE,
+    };
+
+sub clock_to_time ($) {
+    my ($str) = @_;
+    if ($str =~ /^(\d+):(\d+)$/
+	and 0 <= $1 and $1 < HOURS_DAY
+	and 0 <= $2 and $2 < MINUTES_HOUR)
+    {
+	my @now = localtime time;
+	my $target = timelocal(0, $2, $1, @now[3 .. $#now]);
+	$target > time or $target += SECONDS_DAY;
+	$target > time or die;
+	$target;
+    } else {
+	die "Invalid clock time '$str'\n";
+    }
+}
+
+sub time_to_clock ($) {
+    my ($time) = @_;
+    my $h = int($time/SECONDS_HOUR);
+    my $m = int($time/SECONDS_MINUTE) % MINUTES_HOUR;
+    my $s = int($time/1)  % SECONDS_MINUTE;
+    ($h, $m, $s);
+}
+
+sub delay_until ($) {
+    my ($target) = @_;
+    my $last_printed = 0; # always print on 1st iteration
+    while ((my $remaining = $target - time) > 0) {
+	if ($last_printed + INFO_EVERY < time) {
+	    printf "Waiting for %d:%02d:%02d...\n", (time_to_clock $remaining);
+	    $last_printed = time;
+	}
+	sleep min($remaining, SLEEP_FOR);
+    }
+    print "It's the final countdown!\n";
+    sleep 5;
+    print "Fire!\n";
+}
+
+sub prep ();
+sub wakeup ();
+
+@ARGV == 1 or die "Usage: $0 Hh:Mm\n";
+my $target = clock_to_time $ARGV[0];
+prep;
+delay_until $target;
+wakeup;
+
+sub prep () {
+    my $txt = `osascript -e 'get volume settings'`;
+    my ($ov) = ($txt =~ m#output volume:(\d+)[,\s]#)
+	or die "Couldn't find output volume.";
+    my ($muted) = ($txt =~ m#output muted:(true|false)[,\s]#)
+	or die "Couldn't find muting settings";
+    if ($muted eq 'true') {
+	print "WHOA! MUTED\n" for 1 .. 20;
+    }
+    #system(q{osascript -e 'tell application "VLC" to stop'});
+    system(q{mpc -q pause; mpc status});
+    print "System volume: $ov\n";
+    print "\nRunning:\n";
+}
+sub wakeup () {
+    #system(q{osascript -e 'tell application "VLC" to play'});
+    system(q{mpc play});
+}
+
+__END__
