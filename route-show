@@ -1,0 +1,70 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+use 5.010;
+use autodie;
+
+use Getopt::Std;
+use Term::ANSIColor;
+
+my %flagmap = qw(
+                 1       PROTO1   
+                 2       PROTO2   
+                 3       PROTO3   
+                 B       BLACKHOLE
+                 b       BROADCAST
+                 C       CLONING  
+                 c       PRCLONING
+                 D       DYNAMIC  
+                 G       GATEWAY  
+                 H       HOST     
+                 I       IFSCOPE  
+                 i       IFREF    
+                 L       LLINFO   
+                 M       MODIFIED 
+                 m       MULTICAST
+                 R       REJECT   
+                 r       ROUTER   
+                 S       STATIC   
+                 U       UP       
+                 W       WASCLONED
+                 X       XRESOLVE 
+                 Y       PROXY    
+                ); # from route(4)
+
+my @opts = @ARGV;
+
+# Validate the options, even though we don't use them directly.
+getopts('rAalnf:', {}) and !@ARGV or die "$0: usage error.\n";
+
+
+open my($ns), "netstat -rn @opts |";
+while (<$ns>) {
+    if (/^Routing tables$/
+        or /^(\w+):$/ # e.g. Internet:
+        or /^Destination\s/
+        or /^$/)
+    {
+        print;
+    } else {
+        my ($dest, $gw, $flags, @rest) = split /\s+/, $_;
+        my @flags;
+        for my $f (split //, $flags) {
+            if (my $desc = $flagmap{$f}) {
+                push @flags, "$f=$desc";
+            } else {
+                push @flags, "$f";
+            }
+        }
+        print;
+        if (-t STDOUT) {
+            print " ", colored("@flags", "faint"), "\n";
+        } else {
+            print " @flags\n";
+        }
+    }
+}
+
+close $ns;
+
