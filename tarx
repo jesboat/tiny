@@ -1,0 +1,212 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+use 5.010;
+use autodie;
+
+use File::Temp qw(tempdir);
+use File::Spec;
+use File::Slurp qw(read_dir);
+
+
+my $use_stdin;
+my $input_path;
+my $extract_dir_path;
+my $basename;
+my $compression;
+
+sub usage {
+    die "Usage: $0 [filename | -]\n";
+}
+
+sub parse_args {
+    # Parse all options off the front of @_
+    while (@_) {
+        given (shift @_) {
+            when ('--') { last; }
+            when ('-')  { $use_stdin = 1; }
+            when (/^-/) {
+                print STDERR "Illegal option '$_'.\n";
+                usage();
+            }
+            default {
+                unshift @_, $_;  # put it back since it's not an option
+                last;
+            }
+        }
+    }
+
+    # Now parse arguments
+    if (@_ == 0) {
+        $use_stdin = 1;
+    } elsif (@_ == 1) {
+        if ($use_stdin) {
+            print STDERR "Cannot specify both '-' for stdin and a filename.\n";
+            usage();
+        }
+        $input_path = shift;
+    } else {
+        print STDERR "Cannot specify multiple input files.\n";
+        usage();
+    }
+}
+
+sub setup {
+    parse_args(@ARGV);
+
+    if ($use_stdin) {
+        if (-t STDIN) {
+            die "$0: standard input is a tty which is not what you want.\n";
+        }
+        $extract_dir_path = File::Spec->curdir;
+        $basename = undef;
+    } else {
+        (-e $input_path) or die "$0: '$input_path' does not exist.\n";
+        (! -d $input_path) or die "$0: '$input_path' is a directory.\n";
+
+        my ($volume, $dir, $filename) = File::Spec->splitpath($input_path);
+        #$extract_dir_path = File::Spec->catpath($volume, $dir, '');
+        $extract_dir_path = File::Spec->curdir;
+
+        if ($filename =~ /^(.+) \.tar (\.[a-zA-Z0-9]+)?$/xi) {
+            $basename = $1;
+            $compression = substr($2, 1);  # ".gz" -> "gz"
+        } elsif ($filename =~ /^(.+) \. (tgz | tbz2)$/xi) {
+            $basename = $1;
+            $compression = $2;
+        } else {
+            $basename = "$filename.extracted";
+        }
+    }
+}
+
+sub decompressor_command {
+    given (lc $compression) {
+        when ([qw(gz tgz)])   { return "gunzip" }
+        when ([qw(bz2 tbz2)]) { return "bunzip2" }
+        when ('Z')            { return 'uncompress' }
+        when ('xz')           { return "unxz" }
+        default {
+            die "$0: unknown compression type '$compression'.\n";
+        }
+    }
+}
+
+sub dont_overwrite {
+    my ($path) = @_;
+
+    if (! -e $path) {
+        return $path;  # easy
+    }
+
+    for my $index (0 .. 100) {
+        if (! -e "$path.index") {
+            return "$path.$index";
+        }
+    }
+
+    die "$0: couldn't find unused filename; ",
+        "tried ['$path', '$path.0', ... '$path.100'].\n";
+}
+
+sub run_pipeline {
+    my @cmdlines = @_;
+
+    my @stdins;
+    my @stdouts;
+    
+    $stdins[0] = undef;  # our stdin
+    for my $i (0 .. $#cmdlines - 1) {
+        my ($reader, $writer);
+        pipe($reader, $writer);
+        $stdouts[$i] = $writer;
+        $stdins[$i + 1] = $reader;
+    }
+    $stdouts[$#cmdlines] = undef;  # our stdout
+
+    my @pids;
+    for my $i (0 .. $#cmdlines) {
+        my $pid = fork;
+        if ($pid) {  # parent
+            $pids[$i] = $pid;
+        } else {  # child
+            if ($stdins[$i]) {
+                open STDIN, "<&", $stdins[$i];
+            }
+            if ($stdouts[$i]) {
+                open STDOUT, ">&", $stdouts[$i];
+            }
+            for my $fh (@stdins, @stdouts) {
+                next if not $fh;  # $stdins[0] and $stdouts[$#cmdlines]
+                close $fh;
+            }
+
+            my ($exec, @args) = @{ $cmdlines[$i] };
+            exec $exec ($exec, @args)  or die "$0: exec $exec: $!\n";
+        }
+    }
+
+    for my $fh (@stdins, @stdouts) {
+        next if not $fh;  # $stdins[0] and $stdouts[$#cmdlines]
+        close $fh;
+    }
+
+    my @exits;
+    for my $i (0 .. $#cmdlines) {
+        waitpid $pids[$i], 0;
+        $exits[$i] = $?;
+    }
+
+    if (grep { $_ != 0 } @exits) {
+        die sprintf(
+                "$0: running pipeline '%s' failed. Wait codes were %s, resp.\n",
+                join(" | ", map { $_->[0] } @cmdlines),
+                join(", ", @exits));
+    }
+}
+
+sub extract {
+    my $tmpdir = tempdir(
+                    ($basename // "stdin").".extracting_XXXXXX",
+                    CLEANUP => 1,
+                    DIR => $extract_dir_path);
+
+    my @pipeline = (
+        ['pv', ($use_stdin ? ('-') : ('--', $input_path))],
+        (defined $compression ? [decompressor_command()] : ()),
+        ['tar', '-xC', $tmpdir],
+    );
+
+    run_pipeline(@pipeline);
+
+    my $ideal_tgt_filename;
+
+    my @toplevel_items = read_dir($tmpdir);
+    if (@toplevel_items == 1) {
+        $ideal_tgt_filename = $toplevel_items[0];
+    } elsif (defined $basename) {
+        $ideal_tgt_filename = $basename;
+    } else {
+        # Use "stdin.extracted_XXXXXX" where XXXXXX is same as in $tmpdir
+        my ($v, $d, $f) = File::Spec->splitpath($tmpdir, 'dir');
+        my @ds = File::Spec->splitdir($d);
+        ($ideal_tgt_filename = $ds[-1]) =~ s/extracting/extracted/;
+    }
+
+    my $tgt_path =
+            dont_overwrite(
+                File::Spec->catfile($extract_dir_path, $ideal_tgt_filename));
+
+    if (@toplevel_items == 1) {
+        rename(File::Spec->catfile($tmpdir, $toplevel_items[0]),
+               $tgt_path);
+        rmdir($tmpdir);
+    } else {
+        rename($tmpdir, $tgt_path);
+    }
+}
+
+setup();
+extract();
+
