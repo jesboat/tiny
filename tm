@@ -139,7 +139,7 @@ sub read_clipboard
     } else {
         die "$0: got wait code $exitCode, wtf";
     }
-    
+
     # Done.
     close $fh;
     return $content;
@@ -207,3 +207,160 @@ sub main {
 }
 
 exit(main()) unless caller;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+tm - render timestamps in a human-readable format
+
+
+=head1 SYNOPSIS
+
+    tm 1510588745
+
+    tm 1510588745000 1479052745000
+
+    (echo 1510588745; echo 1479052745) | tm
+
+    tm 1479052745000000000
+
+    tm --paste
+
+
+=head1 DESCRIPTION
+
+B<tm> reads numeric timestamps and prints them in human-readable format.
+
+Timestamps must be either UNIX time (seconds since the UNIX epoch, of
+January 1, 1990; see L<time(3)>), or UNIX time in milliseconds since the
+epoch, or UNIX time in nanoseconds since the epoch.
+
+B<tm> can run in three modes.
+
+=over 4
+
+=item *
+
+When run with arguments, B<tm> attempts to render every argument, and prints
+the human-readable versions one per line (in the same order that they were
+listed in the argument list.) If only a single argument is given, the output
+will consist of nothing but the human-readable timestamp; otherwise, output
+lines may include a prefix indicating which argument they correspond to.
+
+=item *
+
+When run without arguments, B<tm> reads timestamps from standard input. Each
+line on standard input should be a single timestamp. For each input line,
+B<tm> will print the corresponding human-readable version alone on a line to
+standard output.
+
+=item *
+
+When run with the C<--paste> option, B<tm> will run continuously. It will
+monitor the system clipboard, and, when the clipboard appears to contain a
+timestamp, it will render the timestamp to standard output.
+
+The intent is that somebody who frequently does timestamp conversions can
+simply leave C<tm --paste> running in a terminal; all they need to do to render
+a timestamp is copy it, and the human-readable version will be printed by B<tm>
+with no further action necessary.
+
+=back
+
+
+=head1 OPTIONS
+
+=over 2
+
+=item B<--paste>
+
+Instead of printing timestamps from the arguments or standard input, run
+continuously, printing any timestamps found on the system clipboard.
+
+=back
+
+
+=head1 RETURN VALUE
+
+Returns 0 if all timestamps were successfully parsed and rendered.
+Returns non-zero otherwise.
+
+
+=head1 EXAMPLES
+
+Render a single timestamp, given in seconds:
+
+    $ tm 1510588745
+    Mon Nov 13 10:59:05 2017
+    $
+
+Render multiple timestamps (as arguments), given in milliseconds:
+
+    $ tm 1510588745000 1479052745000
+    1510588745000 Mon Nov 13 10:59:05 2017
+    1479052745000 Sun Nov 13 10:59:05 2016
+    $
+
+Render multiple timestamps (on standard input), given in a mix of seconds and
+milliseconds:
+
+    $ (echo 1510588745; echo 1479052745000) | tm
+    Mon Nov 13 10:59:05 2017
+    Sun Nov 13 10:59:05 2016
+    $
+
+Render a single timestamp, given in nanoseconds:
+
+    $ tm 1479052745000000000
+    Sun Nov 13 10:59:05 2016
+    $
+
+Follow the clipboard. Note that (1) when a timestamp is copied, it is rendered
+shortly after; (2) things that don't look like timestamps are silently ignored;
+and (3) trailing whitespace is permitted.
+
+    $ tm --paste &
+    [1] 2992
+    $ echo 1510588745 | pbcopy; sleep 5
+    1510588745: Mon Nov 13 10:59:05 2017
+    $ echo 'some text including the number 1479052745000' | pbcopy; sleep 5
+    $ echo 1510588745000 | pbcopy; sleep 5
+    1510588745000: Mon Nov 13 10:59:05 2017
+    $ (echo 1510588745000000000; echo; echo) | pbcopy; sleep 5
+    1510588745000000000: Mon Nov 13 10:59:05 2017
+    $
+
+
+=head1 CAVEATS
+
+B<tm> uses some huerestics to determine whether a timestamp is in seconds,
+milliseconds, or nanoseconds. Those huerestics work for timestamps between 1971
+and 2039 (inclusive). Using timestamps outside that range will result in an
+error.
+
+When run in B<--paste> mode, B<tm> may need to poll the system clipboard. There is
+a small delay between polls. This ensures that B<tm> uses negligible CPU.  It
+also means that there may be a delay of a couple seconds between when a
+timestamp is copied and when B<tm> renders it, and that if multiple timestamps
+are copied in rapid succession, B<tm> may miss some.
+
+
+=head1 AUTHOR
+
+Jonathan Sailor.
+
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright 2015-2017, Facebook.
+Copyright 2015-2017, Jonathan Sailor.
+
+This script is free software; you may redistribute it and/or modify it
+under the terms of the Perl Artistic License.
+
+
+=cut
+
