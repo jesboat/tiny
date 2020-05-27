@@ -1,0 +1,122 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+use autodie;
+
+
+my %FILETYPES = (
+    yaml => {
+        aliases => [qw(yml)],
+        module => 'YAML::XS',
+        load => sub {
+            my ($fh) = @_;
+            return [YAML::XS::LoadFile($fh)];
+        },
+        dump => sub {
+            my ($stuff, $fh) = @_;
+            YAML::XS::DumpFile($fh, @$stuff);
+        },
+    },
+    dumper => {
+        module => 'Data::Dumper',
+        load => sub {
+            my ($fh) = @_;
+            die "Loading from Data::Dumper format is unsupported; died";
+        },
+        dump => sub {
+            my ($stuff, $fh) = @_;
+            print {$fh} Data::Dumper->new($stuff)
+                            ->Purity(1)->Terse(1)->Sortkeys(1)
+                            ->Sparseseen(1)
+                            ->Dump;
+        },
+    },
+    json => {
+        module => 'JSON',
+        load => sub {
+            my ($fh) = @_;
+            my $json = JSON->new->utf8->relaxed;
+            my $text = do { local $/; <$fh> };
+            my $objs = [];
+            THING: {
+                my ($obj, $textlen) = $json->decode_prefix($text);
+                push @$objs, $obj;
+                substr($text, 0, $textlen, "");
+                if ($text =~ /\S/) {
+                    redo THING;
+                }
+            }
+            return $objs;
+        },
+        dump => sub {
+            my ($stuff, $fh) = @_;
+            my $json = JSON->new->utf8->pretty->canonical;
+            for my $obj (@$stuff) {
+                print $fh $json->encode($obj);
+                print $fh "\n";
+            }
+        }
+    },
+    storable => {
+        module => 'Storable',
+        load => sub {
+            my ($fh) = @_;
+            return Storable::fd_retrieve($fh);
+        },
+        dump => sub {
+            my ($stuff, $fh) = @_;
+            no warnings 'once';
+            local $Storable::canonical = 1;
+            Storable::nstore_fd($stuff, $fh);
+        },
+    },
+);
+
+while (my ($ftname, $ftinfo) = each %FILETYPES) {
+    $ftinfo->{name} = $ftname;
+}
+
+my %FTNAMES = %FILETYPES;
+while (my ($ftname, $ftinfo) = each %FILETYPES) {
+    for my $alias (@{$ftinfo->{aliases} || []}) {
+        $FTNAMES{$alias} and die "Duplicate name $alias";
+        $FTNAMES{$alias} = $ftinfo;
+    }
+}
+
+
+sub getft {
+    my ($name) = @_;
+    my $info = $FTNAMES{$name};
+    if (not $info) {
+        my $names = join("/", sort keys %FILETYPES);
+        die "Unknown file type '$name'; try one of $names\n";
+    }
+    if (my $module = $info->{module}) {
+        eval "use $module (); 1"
+            or die "Couldn't load $module required for filetype $name: $@";
+    }
+    return $info;
+}
+
+
+sub main {
+    my ($name, @args) = @_;
+    ($name =~ m[(.*/)? (\w+) 2 (\w+)\z]x)
+        or die "$0: must be invoked as foo2bar for filetypes foo and bar\n";
+    my ($inftname, $outftname) = ($2, $3);
+    @args == 0
+        or die "Usage: $0 < infile > outfile\n";
+    my $inft = getft($inftname);
+    my $outft = getft($outftname);
+    my $stuff = $inft->{load}->(\*STDIN);
+    $outft->{dump}->($stuff, \*STDOUT);
+    return 0;
+}
+
+
+if (not caller) {
+    exit(main($0, @ARGV));
+}
+
