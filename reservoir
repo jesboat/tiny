@@ -1,0 +1,34 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+
+if (@ARGV) {
+  die "Usage: PROGRAM | reservoir | ...\n";
+}
+
+
+my $buffers = [];
+
+while (1) {
+  my $buffer;
+  my $read = read(STDIN, $buffer, 4096);
+  if ($read) {
+    if (@$buffers and length(${$buffers->[-1]}) < 4096) {
+      ${$buffers->[-1]} .= $buffer;
+    } else {
+      push @$buffers, \$buffer;
+    }
+  } elsif (defined $read) {
+    # pleasant EOF
+    last;
+  } else {
+    warn "$0: error reading stdin: $!\n";
+    last;
+  }
+}
+
+for my $bufref (@$buffers) {
+  print $$bufref;
+  $$bufref = undef;
+}
