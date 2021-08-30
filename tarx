@@ -23,17 +23,17 @@ sub usage {
 sub parse_args {
     # Parse all options off the front of @_
     while (@_) {
-        given (shift @_) {
-            when ('--') { last; }
-            when ('-')  { $use_stdin = 1; }
-            when (/^-/) {
-                print STDERR "Illegal option '$_'.\n";
-                usage();
-            }
-            default {
-                unshift @_, $_;  # put it back since it's not an option
-                last;
-            }
+        my $arg = shift @_;
+        if ($arg eq '--') {
+            last;
+        } elsif ($arg eq '-') {
+            $use_stdin = 1;
+        } elsif ($arg =~ /^-/) {
+            print STDERR "Illegal option '$_'.\n";
+            usage();
+        } else {
+            unshift @_, $arg;  # put it back since it's not an option
+            last;
         }
     }
 
@@ -81,16 +81,28 @@ sub setup {
     }
 }
 
-sub decompressor_command {
-    given (lc $compression) {
-        when ([qw(gz tgz)])   { return "gunzip" }
-        when ([qw(bz2 tbz2)]) { return "bunzip2" }
-        when ('Z')            { return 'uncompress' }
-        when ('xz')           { return "unxz" }
-        default {
-            die "$0: unknown compression type '$compression'.\n";
+sub build_extension_to_decompressor_map {
+    my $command_to_extensions = {
+        'gunzip' => [qw(gz tgz)],
+        'bunzip2' => [qw(bz2 tbz2)],
+        'uncompress' => ['Z'],
+        'unxz' => ['xz'],
+        'unzstd' => ['zst', 'zstd'],
+    };
+    my $extension_to_decompressor = {};
+    while (my ($cmd, $extensions) = each %$command_to_extensions) {
+        foreach my $extension (@$extensions) {
+            $extension_to_decompressor->{$extension} = $cmd;
         }
     }
+    return $extension_to_decompressor;
+}
+
+sub decompressor_command {
+    state $extention_to_command = build_extension_to_decompressor_map();
+    my $cmd = $extention_to_command->{lc($compression)}
+        // die "$0: unknown compression type '$compression'.\n";
+    return $cmd;
 }
 
 sub dont_overwrite {
@@ -115,7 +127,7 @@ sub run_pipeline {
 
     my @stdins;
     my @stdouts;
-    
+
     $stdins[0] = undef;  # our stdin
     for my $i (0 .. $#cmdlines - 1) {
         my ($reader, $writer);
@@ -181,17 +193,30 @@ sub extract {
     run_pipeline(@pipeline);
 
     my $ideal_tgt_filename;
-
+    my $should_unwrap;
     my @toplevel_items = read_dir($tmpdir);
-    if (@toplevel_items == 1) {
-        $ideal_tgt_filename = $toplevel_items[0];
-    } elsif (defined $basename) {
+
+    if (defined $basename) {
+        # If given a file, always extract to a dir with the same basename. But,
+        # if the tarball contains a single item with the same basename, remove
+        # the redundant layer.
         $ideal_tgt_filename = $basename;
+        if (@toplevel_items == 1 and $toplevel_items[0] eq $basename) {
+            $should_unwrap = 1;
+        }
     } else {
-        # Use "stdin.extracted_XXXXXX" where XXXXXX is same as in $tmpdir
-        my ($v, $d, $f) = File::Spec->splitpath($tmpdir, 'dir');
-        my @ds = File::Spec->splitdir($d);
-        ($ideal_tgt_filename = $ds[-1]) =~ s/extracting/extracted/;
+        # If given stdin, the caller hasn't given any predictable name, except
+        # for whatever might be in the tar itself. So, if it has a single item,
+        # promote that to the top-level regardless of name. Otherwise, use
+        # "stdin.extracted_XXXXXX" where the XXXXXX is the same as in $tmpdir.
+        if (@toplevel_items == 1) {
+            $ideal_tgt_filename = $toplevel_items[0];
+            $should_unwrap = 1;
+        } else {
+            my ($v, $d, $f) = File::Spec->splitpath($tmpdir, 'dir');
+            my @ds = File::Spec->splitdir($d);
+            ($ideal_tgt_filename = $ds[-1]) =~ s/extracting/extracted/;
+        }
     }
 
     my $tgt_path =
